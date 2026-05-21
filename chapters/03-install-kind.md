@@ -243,14 +243,14 @@ If it prints `hello from inside the cluster`, the cluster pulled your image thro
 
 We use Traefik as the cluster's ingress controller. If you already run Traefik elsewhere as a standalone reverse proxy, it's the **same binary** — only the config source is different: this one reads Kubernetes `Ingress` resources from the API server, where the standalone one reads Docker labels or static files. Two independent processes, no shared state.
 
-Install via helm. Single line so it copy-pastes cleanly:
+Install via helm. We use `helm upgrade --install` instead of plain `helm install` so the command stays re-runnable — if a previous attempt left a failed release behind, this updates it in place instead of erroring with "cannot re-use a name."
 
 ```shell
 helm repo add traefik https://traefik.github.io/charts && helm repo update
 ```
 
 ```shell
-helm install traefik traefik/traefik -n traefik --create-namespace --set-string "nodeSelector.ingress-ready=true" --set "tolerations[0].key=node-role.kubernetes.io/control-plane" --set "tolerations[0].operator=Exists" --set "tolerations[0].effect=NoSchedule" --set "ports.web.hostPort=80" --set "ports.websecure.hostPort=443" --set "service.type=ClusterIP"
+helm upgrade --install traefik traefik/traefik -n traefik --create-namespace --set-string "nodeSelector.ingress-ready=true" --set "tolerations[0].key=node-role.kubernetes.io/control-plane" --set "tolerations[0].operator=Exists" --set "tolerations[0].effect=NoSchedule" --set "ports.web.hostPort=80" --set "ports.websecure.hostPort=443" --set "service.type=ClusterIP"
 ```
 
 What each `--set` does:
