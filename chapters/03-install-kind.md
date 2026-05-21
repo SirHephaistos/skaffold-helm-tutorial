@@ -387,31 +387,7 @@ k9s
 
 ---
 
-## 9. Differences vs the original chapter — important to know going forward
-
-When you read chapter 4 onwards, replace the following on the fly:
-
-| Original (k3s) | This setup (kind) |
-|---|---|
-| `registry.kube-public/myfrontend` | `localhost:5001/myfrontend` |
-| `registry.kube-public/myapi` | `localhost:5001/myapi` |
-| `imagePullSecrets: [registry-creds]` | **omit it** — our registry is plain HTTP, no auth |
-| `host: frank-test.duckdns.org` (chapter 9) | `host: tutorial.localhost`, accessed via `curl http://localhost:8080 -H "Host: tutorial.localhost"` |
-| `kubectl create secret docker-registry registry-creds ...` | not needed |
-
-Everything else (Deployments, StatefulSets, Services, Helm charts, Skaffold config, Flux gitops) is **byte-for-byte identical**.
-
-When chapter 7 introduces skaffold's `-d registry.kube-public` flag, you'll write:
-
-```
-skaffold run -d localhost:5001
-```
-
-instead.
-
----
-
-## 10. Cleanup / restart cheat sheet
+## 9. Cleanup / restart cheat sheet
 
 Things go wrong sometimes. These commands are safe to run any time:
 
