@@ -230,10 +230,12 @@ If the push prints `test: digest: sha256:... size: ...` you're done. Modern Dock
 Verify the cluster can pull the image you just pushed (this is the real test of the redirect trick):
 
 ```shell
-kubectl run busybox-test --image=localhost:5001/busybox:test --rm -it --restart=Never --image-pull-policy=Always -- sh -c 'echo "hello from inside the cluster"'
+kubectl run busybox-test --image=localhost:5001/busybox:test --rm -it --restart=Never --image-pull-policy=Always -- sh -c 'sleep 1; echo "hello from inside the cluster"'
 ```
 
 If it prints `hello from inside the cluster`, the cluster pulled your image through the redirect successfully. If it errors with `ErrImagePull` or hangs, run `kubectl describe pod busybox-test` and look at the `Events:` section.
+
+> The `sleep 1;` before the `echo` exists only so `kubectl ... -it` has time to wire up its TTY attach before the container exits. Without it, the command still works but kubectl prints a `couldn't attach... falling back to streaming logs` warning. Cosmetic.
 
 ---
 
