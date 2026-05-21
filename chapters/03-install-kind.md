@@ -7,7 +7,7 @@
 The end-state is the same as the original chapter 3:
 
 * a real Kubernetes cluster on the local machine
-* an **ingress controller** (nginx) so we can later route HTTP traffic
+* an **ingress controller** (Traefik) so we can later route HTTP traffic
 * a **container registry** so docker images we build are reachable from inside the cluster
 * a **certificate manager** with a local CA so we can hand out TLS certs
 * the client tools to drive all of this (`kubectl`, `helm`, `skaffold`, `k9s`, `kubectx`)
@@ -91,8 +91,8 @@ A kind cluster is a regular Docker container. By default it doesn't publish anyt
 
 For this tutorial we want:
 
-* **8080** on the host → 80 inside the cluster (HTTP for nginx-ingress)
-* **8443** on the host → 443 inside the cluster (HTTPS for nginx-ingress)
+* **8080** on the host → 80 inside the cluster (HTTP for the ingress controller)
+* **8443** on the host → 443 inside the cluster (HTTPS for the ingress controller)
 
 Why those numbers? Host ports 80 and 443 are likely already taken on any machine that hosts other web services — a reverse proxy, a website, a media server, anything with an HTTP front-end. Picking the `+8000` variants keeps the two stacks side-by-side without conflict, and they're a common convention for "secondary HTTP listener on this box."
 
@@ -110,7 +110,7 @@ apiVersion: kind.x-k8s.io/v1alpha4
 name: tutorial
 nodes:
   - role: control-plane
-    # This label is what nginx-ingress uses to find a node it's allowed to schedule on.
+    # This label is what the ingress controller (Traefik) uses to find a node it's allowed to schedule on.
     kubeadmConfigPatches:
       - |
         kind: InitConfiguration
@@ -237,36 +237,48 @@ If it prints `hello from inside the cluster`, the cluster pulled your image thro
 
 ---
 
-## 6. Install the nginx ingress controller
+## 6. Install the Traefik ingress controller
 
-Kind has its own preset manifest for nginx-ingress that already knows about the `ingress-ready=true` node label and the host port mapping we set in step 3. So we don't even need helm here:
+We use Traefik as the cluster's ingress controller. If you already run Traefik elsewhere as a standalone reverse proxy, it's the **same binary** — only the config source is different: this one reads Kubernetes `Ingress` resources from the API server, where the standalone one reads Docker labels or static files. Two independent processes, no shared state.
+
+Install via helm. Single line so it copy-pastes cleanly:
 
 ```shell
-kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
+helm repo add traefik https://traefik.github.io/charts && helm repo update
 ```
+
+```shell
+helm install traefik traefik/traefik -n traefik --create-namespace --set "nodeSelector.ingress-ready=true" --set "tolerations[0].key=node-role.kubernetes.io/control-plane" --set "tolerations[0].operator=Exists" --set "tolerations[0].effect=NoSchedule" --set "ports.web.hostPort=80" --set "ports.websecure.hostPort=443" --set "service.type=ClusterIP"
+```
+
+What each `--set` does:
+
+* `nodeSelector.ingress-ready=true` → schedule Traefik on the node we labeled in step 3, the one whose `extraPortMappings` actually publishes ports to the host.
+* `tolerations[0...]` → kind's single-node cluster has only a control-plane node, and control-plane nodes carry a `NoSchedule` taint that normally blocks workload pods. The toleration tells Traefik "I'm fine landing on a control-plane node."
+* `ports.web.hostPort=80` / `ports.websecure.hostPort=443` → bind directly to the kind node container's ports 80/443. Kind's `extraPortMappings` then surfaces those as host `localhost:8080` / `localhost:8443`.
+* `service.type=ClusterIP` → don't request a `LoadBalancer` (we have no cloud LB provider). External traffic enters via `hostPort` instead.
 
 Wait for it to come up:
 
 ```shell
-kubectl wait --namespace ingress-nginx \
-  --for=condition=ready pod \
-  --selector=app.kubernetes.io/component=controller \
-  --timeout=180s
+kubectl wait --namespace traefik --for=condition=ready pod --selector=app.kubernetes.io/name=traefik --timeout=180s
 ```
 
-When that returns, ingress is alive on the host at:
+When that returns, Traefik listens on:
 
 * `http://localhost:8080`
-* `https://localhost:8443` (will use a self-signed cert for now)
+* `https://localhost:8443` (Traefik's auto-generated self-signed cert; we'll replace it with the cert-manager-issued one in chapter 9)
 
-Quick sanity probe:
+Sanity probe:
 
 ```shell
 curl -I http://localhost:8080/
-# should answer 404 from nginx — that's correct, no ingress rules exist yet
+# should answer 404 — correct, no Ingress rules defined yet
 ```
 
-You'll also see two `ingress-nginx-admission-*` pods in `Completed` state — that's expected. They're one-shot Kubernetes Jobs that bootstrap the validating webhook and exit. A `Completed` Job is healthy; it should *not* be `Running` long-term.
+A 404 here is **good**. It proves the request reached Traefik but Traefik has nothing to route it to. Once chapter 9 creates an `Ingress` resource, the same URL will resolve.
+
+> **Why Traefik over nginx-ingress?** Both are valid `Ingress` controllers. Traefik makes the standard k8s `Ingress` object work without nginx-specific annotations (`nginx.ingress.kubernetes.io/use-regex`, etc.), keeping later chapters' YAML portable across controllers. nginx-ingress remains a fine choice — the swap is one helm install away.
 
 ---
 
@@ -342,7 +354,7 @@ kubectl get pods -A
 kubectl get clusterissuer
 
 # the ingress controller should be Running
-kubectl get pods -n ingress-nginx
+kubectl get pods -n traefik
 
 # the registry container should be reachable
 curl http://localhost:5001/v2/_catalog
