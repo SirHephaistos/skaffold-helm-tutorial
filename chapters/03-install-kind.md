@@ -286,17 +286,27 @@ A 404 here is **good**. It proves the request reached Traefik but Traefik has no
 
 ## 7. Install cert-manager + a local CA + a ClusterIssuer
 
-This part is **identical** to the original chapter 3 — it's a Kubernetes concept, not a k3s concept. We need it because:
+### What cert-manager is
 
-* later chapters create TLS certificates for ingress hostnames
-* chapter 10 demonstrates operators, and cert-manager *is* an operator (CRD + controller) — a great real-world specimen
+**cert-manager** is the Kubernetes-native way to issue and renew TLS certificates automatically. If you've used Let's Encrypt with `certbot` on a regular Linux server, cert-manager is the same idea — turn a *request* for "I need an HTTPS cert for `foo.example.com`" into a real, signed certificate file — but driven by Kubernetes objects instead of cron jobs and shell scripts.
+
+The pieces:
+
+* **`Issuer` / `ClusterIssuer`** — *who* should sign certs. Could be Let's Encrypt over ACME, a self-signed CA you control, HashiCorp Vault, etc. `Issuer` is namespace-scoped; `ClusterIssuer` is cluster-wide. In this tutorial we make one `ClusterIssuer` backed by a local self-signed CA, so every namespace can request certs from it.
+* **`Certificate`** — *what* cert you want. Hostname(s), validity, which Issuer to ask. cert-manager reconciles each `Certificate` by asking the referenced Issuer for a signed cert.
+* **The result** — cert-manager writes the signed cert + private key into a normal Kubernetes **`Secret`** (`type: kubernetes.io/tls`). Your Ingress / Service / Pod consumes that Secret the usual way. Renewal happens automatically before expiry.
+
+Why it matters for this tutorial:
+
+* Later chapters create TLS certificates for ingress hostnames — cert-manager is what makes that one-line.
+* Chapter 10 introduces **operators**, and cert-manager *is* a textbook operator: it ships CRDs (`Certificate`, `Issuer`, `ClusterIssuer`, `CertificateRequest`, `Challenge`, `Order`) plus a controller that reconciles them. Installing it now also means by chapter 10 you already have a real operator running to dissect.
+
+This part is **identical** to the original chapter 3 — cert-manager is a Kubernetes concept, not a k3s concept.
 
 ```shell
 helm repo add jetstack https://charts.jetstack.io
 helm repo update
-helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager --create-namespace \
-  --set installCRDs=true
+helm upgrade --install cert-manager jetstack/cert-manager --namespace cert-manager --create-namespace --set crds.enabled=true
 ```
 
 Wait until the three cert-manager pods are running:
