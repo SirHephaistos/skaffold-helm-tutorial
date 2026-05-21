@@ -28,7 +28,7 @@ This drops a `myapp/` folder loaded with example files for a generic web app. Mo
 * Delete every file under `myapp/templates/` but **keep the `templates/` folder itself**.
 * Leave `myapp/Chart.yaml` alone.
 
-Now move the **frontend deployment yaml** from chapter 4 into `myapp/templates/frontend.yaml`. For now, paste it in unchanged (we'll templatize in a moment):
+Now create a **new file** `myapp/templates/frontend.yaml`. Paste the content below into it — this is the same Deployment YAML you used in chapter 4 (with the image ref already adapted for kind). For now leave it un-templated; we'll templatize the image in §3:
 
 ```yaml
 apiVersion: apps/v1
@@ -84,7 +84,13 @@ helm uninstall myapp-deployment-1
 
 Hardcoding `localhost:5001/myfrontend` in the template defeats the point of Helm. Make it a value.
 
-Put this in `myapp/values.yaml`:
+First, uninstall the release from §2 so you don't fight a stale install:
+
+```shell
+helm uninstall myapp-deployment-1
+```
+
+Now open the **already-existing** `myapp/values.yaml` (you emptied it in §2). Add this:
 
 ```yaml
 frontend:
@@ -95,7 +101,7 @@ frontend:
 
 The structure is free-form YAML. Helm reads `values.yaml` into a single Go map; templates reference it as `.Values`.
 
-Now rewrite `myapp/templates/frontend.yaml`. The only change is the `image:` line:
+Now open the **already-existing** `myapp/templates/frontend.yaml` (the file you wrote in §2). Replace its contents with the version below — only one line changes (the `image:` line at the bottom), but it's easiest to copy-paste the whole file:
 
 ```yaml
 apiVersion: apps/v1
@@ -259,32 +265,38 @@ If `endpoints/api` shows the api pod's IP, the Service is wired correctly.
 
 ## 6. Add the database to the chart
 
-The chapter-4 StatefulSet, ConfigMap, and Service for postgres also belong in the chart. Drop the three yamls into `myapp/templates/db.yaml` (one file, separated with `---`). Image references for postgres need no templating since `postgres:16` doesn't change between releases. But there's a worthwhile improvement: make the database **optional**.
+The chapter-4 ConfigMap, StatefulSet, and Service for postgres also belong in the chart.
 
-In `values.yaml`:
+Create a **new file** `myapp/templates/db.yaml`. Paste the three YAMLs from chapter 4 into it (the `postgresql-initdb-config` ConfigMap, the `postgresql-db` StatefulSet, and the `postgres-db` Service), separated by `---` between each. No templating needed yet — `postgres:16` doesn't change between releases.
+
+Now add a worthwhile improvement: make the database **optional**.
+
+Open the **already-existing** `myapp/values.yaml` and add:
 
 ```yaml
 db:
   enabled: true
 ```
 
-Wrap the entire `db.yaml` content in a guard:
+Then edit the **already-existing** `myapp/templates/db.yaml`. Wrap the entire file's content with a Helm conditional — one line at the top, one at the bottom:
 
 ```yaml
 {{- if .Values.db.enabled }}
 apiVersion: v1
 kind: ConfigMap
-# ... rest of postgres-initdb-config
+# ... your existing ConfigMap content
 ---
 apiVersion: apps/v1
 kind: StatefulSet
-# ... rest of postgresql-db
+# ... your existing StatefulSet content
 ---
 apiVersion: v1
 kind: Service
-# ... rest of postgres-db service
+# ... your existing Service content
 {{- end }}
 ```
+
+(The `{{- if ... }}` / `{{- end }}` are template directives, not YAML. They wrap the whole file.)
 
 Now `helm upgrade --install myapp-deployment-1 myapp --set db.enabled=false` will skip the database entirely. Useful in production where you'd connect to an external RDS / CrunchyDB cluster instead of an in-chart postgres.
 
