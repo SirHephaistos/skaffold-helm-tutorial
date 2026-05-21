@@ -417,12 +417,99 @@ docker start kind-registry
 
 ## What you should now understand (chapter 3's real learning goals)
 
-Before moving on to chapter 4, make sure you can answer:
+Before moving on to chapter 4, make sure you can answer the following. Try first; then peek at the spoiler for a check.
 
-* What is a **namespace** and why do we have one per software component?
-* What does a **ClusterIssuer** do, and how is it different from a `Certificate`?
-* What is an **ingress controller** and why doesn't a bare `Ingress` object work without one?
-* Why does the cluster need its own way to *pull* images, separate from the way the host *pushes* them?
-* What does `kubectl apply` actually do at the API level — and how does that differ from `kubectl create`?
+### 1. What is a **namespace** and why do we have one per software component?
+
+<details>
+  <summary>Answer</summary>
+
+A **namespace** is a virtual partition inside a single Kubernetes cluster. Resource names (a Deployment called `frontend`, a Service called `db`, etc.) are unique only **within** a namespace, not across the cluster. Most workload-type resources (Pods, Deployments, Services, ConfigMaps, Secrets, …) live inside a namespace; a small set of resources are cluster-scoped (Nodes, ClusterIssuer, ClusterRole, StorageClass, …).
+
+Reasons to put each software component (cert-manager, ingress controller, registry, your app) in its own namespace:
+
+* **No name collisions** — two unrelated charts can both name their main Deployment `controller` without conflict.
+* **Scoped cleanup** — `kubectl delete namespace foo` deletes everything in that namespace in one shot. Great for "let me just rip out this experiment."
+* **RBAC boundaries** — a Role/RoleBinding can grant access to one namespace only. Devs see their own; ops see all.
+* **Quotas and limits** — CPU/memory/PVC quotas attach per namespace.
+* **Listing hygiene** — `kubectl get pods -n traefik` shows you only Traefik's pods, not 50 unrelated ones.
+
+You *could* put everything in `default`. You shouldn't; on day 30 you won't know what's what.
+
+</details>
+
+### 2. What does a **ClusterIssuer** do, and how is it different from a `Certificate`?
+
+<details>
+  <summary>Answer</summary>
+
+These are two cert-manager CRDs that play different roles.
+
+* **`ClusterIssuer`** describes *who* will sign certificates and *how*. It encapsulates a certificate authority — a self-signed CA backed by a secret (our case), Let's Encrypt over ACME, HashiCorp Vault, etc. It's cluster-scoped, so any namespace can reference it. You usually have one per CA you trust.
+* **`Certificate`** describes *what* you want — hostnames, key type, validity, and **which Issuer/ClusterIssuer to ask**. cert-manager reconciles each `Certificate` by asking the named issuer to sign a CSR, and stores the resulting cert+key in a regular `kubernetes.io/tls` Secret.
+
+Analogy: a `ClusterIssuer` is a passport office; a `Certificate` is a passport application that names the office it should be sent to. The output (a passport / a TLS secret) is what other resources consume.
+
+There's also `Issuer` (namespace-scoped variant of `ClusterIssuer`). Same shape, just narrower visibility.
+
+</details>
+
+### 3. What is an **ingress controller** and why doesn't a bare `Ingress` object work without one?
+
+<details>
+  <summary>Answer</summary>
+
+An **`Ingress`** resource is *data*: a YAML object stored in etcd that says "route `foo.example.com/api` to the `api` Service on port 80, with this TLS secret." It has no behavior of its own.
+
+An **ingress controller** is *code*: a Pod (often a Deployment) running an actual reverse proxy — nginx, Traefik, HAProxy, Istio gateway, etc. — that:
+
+1. Watches the Kubernetes API for `Ingress` objects (and the Services and Endpoints they reference).
+2. Translates them into its own routing configuration on the fly.
+3. Listens on real ports (host ports via `hostPort`, or a `LoadBalancer` service) so external traffic can actually arrive.
+
+Without a controller, `Ingress` objects sit in etcd, nobody reads them, no traffic flows. Some k8s distros bundle a controller (k3s ships Traefik); cloud-managed clusters often ship one tied to the cloud's load balancer. On kind you install one yourself, which is exactly what step 6 of this chapter does.
+
+</details>
+
+### 4. Why does the cluster need its own way to *pull* images, separate from the way the host *pushes* them?
+
+<details>
+  <summary>Answer</summary>
+
+The host's Docker daemon and the cluster nodes' container runtime (containerd, in kind's case) are **two different processes with two different image caches and two different network views**. They don't share state.
+
+* **Host build**: `docker build` stores the image in the *host* daemon's local cache. Cluster nodes have no idea it exists.
+* **Cluster pull**: when a Pod is scheduled, the node's containerd reads the image reference, resolves it to a registry URL, downloads via HTTPS, and stores it in *containerd*'s own cache.
+
+The bridge between the two is a **registry** — a process both sides can reach over HTTP(S). The host *pushes* to it (uploads layers); cluster nodes *pull* from it (download layers).
+
+Why the URLs aren't identical from both sides: in our setup the host reaches the registry through Docker's port-publish mapping (`127.0.0.1:5001` → registry container `:5000`); cluster nodes reach the same registry container directly over the `kind` Docker network (`kind-registry:5000`), bypassing port publishing entirely. The `containerdConfigPatches` block in step 3 rewrites `localhost:5001` → `http://kind-registry:5000` on the cluster side so we can use *one* image reference everywhere.
+
+In a real cloud setup, the registry might be ECR / GCR / a private Harbor; same shape — both sides need network access to the same registry URL, possibly with credentials.
+
+</details>
+
+### 5. What does `kubectl apply` actually do at the API level — and how does that differ from `kubectl create`?
+
+<details>
+  <summary>Answer</summary>
+
+Both end up POSTing or PATCHing to the same `/api/...` endpoint, but with very different semantics:
+
+* **`kubectl create`** is **imperative**. It says "make this new object now." If the named object already exists, the call fails (409 Conflict). Good for one-shot operations; bad for "I'm going to re-run this script tomorrow."
+* **`kubectl apply`** is **declarative**. It says "make the cluster's state match this YAML." Internally:
+  1. It computes a diff between the YAML you passed, the **last-applied configuration** stored as an annotation on the live object (`kubectl.kubernetes.io/last-applied-configuration`), and the current live state.
+  2. It builds a strategic merge patch from those three inputs and PATCHes the API.
+  3. It updates the last-applied annotation to your new YAML.
+
+Consequences:
+
+* `apply` is **idempotent** — re-run with no changes, no-op. Re-run with changes, patches the diff.
+* `apply` is the right verb for everything that lives in git (your helm charts, your flux manifests, your CI scripts). It survives manual edits in the middle reasonably well.
+* `create` is great in scripts where you genuinely want to fail if something already exists (e.g. one-shot secret creation).
+
+Server-Side Apply (`--server-side`) is the newer variant that lets multiple actors co-own different fields of the same object — relevant for operators and GitOps tools that touch the same resource.
+
+</details>
 
 These are the questions the original chapter 3 leaves dangling on purpose. The k3s-vs-kind choice doesn't change any of them.
