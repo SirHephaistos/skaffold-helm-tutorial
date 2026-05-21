@@ -512,4 +512,97 @@ Server-Side Apply (`--server-side`) is the newer variant that lets multiple acto
 
 </details>
 
+### 6. If I set CPU/memory limits at the **pod**, the **namespace**, and the **cluster** level — what's the hierarchy, who enforces what, and can I declare more than physically exists?
+
+<details>
+  <summary>Answer</summary>
+
+There are really **three different concepts** going by the name "limit" in Kubernetes — they don't form a single nested chain, they interact at different stages of a pod's life. Worth separating them.
+
+**1. Pod-level (`resources.requests` / `resources.limits`) — declared in the pod spec, per container.**
+
+```yaml
+resources:
+  requests: { cpu: "100m", memory: "128Mi" }   # what I need to schedule
+  limits:   { cpu: "500m", memory: "256Mi" }   # what I'm allowed to use at runtime
+```
+
+* `requests` are used by the **scheduler** to decide which node has room. Sum of all pods' requests on a node must fit in that node's *allocatable* capacity.
+* `limits` are enforced by the **container runtime** (cgroups). CPU over the limit = throttled; memory over the limit = OOM-killed.
+* No request set = pod scheduled in `BestEffort` class — first to be killed under pressure.
+
+**2. Namespace-level (`ResourceQuota` + `LimitRange`).**
+
+A `ResourceQuota` object caps **the sum** of requests/limits across all pods in a namespace:
+
+```yaml
+kind: ResourceQuota
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: "16Gi"
+    limits.cpu: "20"
+    limits.memory: "32Gi"
+    pods: "50"
+```
+
+Enforced by the **API server admission plugin**: if creating a new pod would push the sum over the quota, the pod is rejected at submission time — it never even reaches the scheduler.
+
+A `LimitRange` is a different beast: it sets default / min / max **per container or per pod** inside a namespace. Used to fill in missing requests on pods that didn't declare them, or to reject obviously-broken values like a 1-byte memory limit.
+
+**3. Node-level — physical/kubelet-imposed, not configured per workload.**
+
+Each node has a `capacity` (everything the hardware reports) and an `allocatable` (capacity minus reservations for kubelet, system daemons, and the eviction threshold). The scheduler treats `allocatable` as the ceiling. You don't "set a limit on a node" — you might reduce `allocatable` by reserving more for system, but the node's physical RAM/CPU is what it is.
+
+**Cluster-level** isn't a single configured number — it's just `sum(allocatable across all nodes)`. There's no `kubectl set cluster-cpu 32`.
+
+### Hierarchy diagram
+
+```
++-------------------- Cluster -----------------------+
+|  Capacity = Σ node.allocatable                     |
+|                                                    |
+|  +--------- Namespace foo ----------+               |
+|  | ResourceQuota.hard.cpu = 10      |  ← API admission
+|  | LimitRange caps per-container    |               |
+|  |                                  |               |
+|  |  +-- Pod A (requests=2, limits=4) +              |
+|  |  +-- Pod B (requests=1, limits=2) +              |
+|  +----------------------------------+               |
+|                                                    |
+|  +------ Node n1 (allocatable cpu=4) ------+        |
+|  | Σ pod.requests scheduled here ≤ 4       |        |
+|  +-----------------------------------------+        |
++----------------------------------------------------+
+```
+
+### Can I declare more than what exists?
+
+* **Pod limits > node allocatable** → API accepts the pod, but the scheduler can never place it. Pod stays `Pending` forever with `0/N nodes available: insufficient cpu/memory`.
+* **Pod limits > namespace ResourceQuota** → API admission rejects the pod immediately. You'll see `exceeded quota` in the error.
+* **Sum of namespace quotas > cluster capacity** → totally legal, K8s won't stop you. It's how multi-tenant clusters oversubscribe ("each team can request 10 CPU, but the cluster only has 8 — they never all use it at once"). Some quotas will admit pods that then sit Pending until capacity frees up.
+* **Pod limits > pod requests** → fine and normal — that's how burstable workloads work.
+* **Container running over its memory limit** → OOMKill by the kernel, pod restarts (unless restartPolicy says no).
+* **Container running over its CPU limit** → throttled (slowed down), not killed.
+
+### Who enforces what, when
+
+| Layer | Enforced by | When |
+|---|---|---|
+| `ResourceQuota` (namespace) | API server admission plugin | Pod creation/update — pod rejected if over |
+| `LimitRange` (namespace) | API server admission plugin | Pod creation — defaults filled in, mins/maxes checked |
+| `requests` (pod) vs node `allocatable` | Scheduler | Pod placement |
+| `limits` (pod) | Container runtime (cgroups) | At runtime |
+| Node `allocatable` | kubelet config | Always; reduces visible capacity |
+| Cluster total | (none, just an aggregate) | n/a |
+
+### Practical advice
+
+* Always set `requests` on production pods. Without them the scheduler is guessing and your cluster will look fuller than it is.
+* Set `limits` to prevent one rogue pod eating a whole node. Memory limit especially.
+* `ResourceQuota` belongs on shared clusters where teams should not be able to eat everyone else's room.
+* `LimitRange` is good defense-in-depth: it gives any unlabeled pod a sane default, so a developer who forgot to set requests doesn't accidentally schedule a giant best-effort blob.
+
+</details>
+
 These are the questions the original chapter 3 leaves dangling on purpose. The k3s-vs-kind choice doesn't change any of them.
