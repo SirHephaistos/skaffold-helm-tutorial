@@ -90,7 +90,9 @@ First, uninstall the release from §2 so you don't fight a stale install:
 helm uninstall myapp-deployment-1
 ```
 
-Now open the **already-existing** `myapp/values.yaml` (you emptied it in §2). Add this:
+### Edit `myapp/values.yaml`
+
+The file is empty (you emptied it in §2). Paste the content below into it — order doesn't matter since the file is empty, just save these four lines:
 
 ```yaml
 frontend:
@@ -101,7 +103,24 @@ frontend:
 
 The structure is free-form YAML. Helm reads `values.yaml` into a single Go map; templates reference it as `.Values`.
 
-Now open the **already-existing** `myapp/templates/frontend.yaml` (the file you wrote in §2). Replace its contents with the version below — only one line changes (the `image:` line at the bottom), but it's easiest to copy-paste the whole file:
+### Edit `myapp/templates/frontend.yaml`
+
+Open the file. Find this line near the bottom (line 16 if you pasted §2's content verbatim):
+
+```yaml
+          image: localhost:5001/myfrontend
+```
+
+Replace **only that one line** with:
+
+```yaml
+          image: "{{ .Values.frontend.image.repository }}:{{ default .Chart.AppVersion .Values.frontend.image.tag }}"
+```
+
+Indentation must stay the same (10 spaces). Everything else in the file is untouched.
+
+<details>
+  <summary>Click for the full file as a sanity check</summary>
 
 ```yaml
 apiVersion: apps/v1
@@ -125,7 +144,11 @@ spec:
           image: "{{ .Values.frontend.image.repository }}:{{ default .Chart.AppVersion .Values.frontend.image.tag }}"
 ```
 
-Two things going on inside the `{{ ... }}` curlies:
+</details>
+
+### What the templating does
+
+Two things inside the `{{ ... }}` curlies:
 
 * `{{ .Values.frontend.image.repository }}` → the string from `values.yaml`.
 * `{{ default .Chart.AppVersion .Values.frontend.image.tag }}` → Helm's `default` function. Returns `.Values.frontend.image.tag` **unless** it's nil/empty/null, in which case it falls back to `.Chart.AppVersion` from `Chart.yaml`.
@@ -150,7 +173,7 @@ helm install myapp-deployment-1 myapp
 
 ## 4. Add a Service for the frontend
 
-Append this to `myapp/templates/frontend.yaml`. The `---` separator is YAML's way of putting multiple documents in one file; Helm just submits each one to the API:
+Open `myapp/templates/frontend.yaml`. At the **end of the file**, append the block below. The `---` separator is YAML's way of putting multiple documents in one file; Helm just submits each one to the API:
 
 ```yaml
 ---
@@ -177,7 +200,9 @@ helm upgrade --install myapp-deployment-1 myapp
 
 ## 5. Deploy the API
 
-In `values.yaml` add a backend section:
+### Edit `myapp/values.yaml`
+
+Right now the file holds the frontend block from §3. Add a backend block **alongside** the frontend one (order doesn't matter — Helm reads it all into one map). The file should end up containing both:
 
 ```yaml
 frontend:
@@ -191,7 +216,7 @@ backend:
     tag: null
 ```
 
-Create `myapp/templates/api.yaml`:
+### Create `myapp/templates/api.yaml` (new file)
 
 ```yaml
 apiVersion: v1
@@ -267,18 +292,26 @@ If `endpoints/api` shows the api pod's IP, the Service is wired correctly.
 
 The chapter-4 ConfigMap, StatefulSet, and Service for postgres also belong in the chart.
 
-Create a **new file** `myapp/templates/db.yaml`. Paste the three YAMLs from chapter 4 into it (the `postgresql-initdb-config` ConfigMap, the `postgresql-db` StatefulSet, and the `postgres-db` Service), separated by `---` between each. No templating needed yet — `postgres:16` doesn't change between releases.
+### Create `myapp/templates/db.yaml` (new file)
 
-Now add a worthwhile improvement: make the database **optional**.
+Paste the three YAMLs from chapter 4 into it, separated by `---` between each (so it's one file with three documents):
 
-Open the **already-existing** `myapp/values.yaml` and add:
+1. the `postgresql-initdb-config` ConfigMap
+2. the `postgresql-db` StatefulSet
+3. the `postgres-db` Service
+
+No templating needed yet — `postgres:16` doesn't change between releases.
+
+### Make the database optional
+
+Open `myapp/values.yaml`. Add a `db:` block alongside the existing `frontend:` and `backend:` blocks (order doesn't matter):
 
 ```yaml
 db:
   enabled: true
 ```
 
-Then edit the **already-existing** `myapp/templates/db.yaml`. Wrap the entire file's content with a Helm conditional — one line at the top, one at the bottom:
+Now edit `myapp/templates/db.yaml`. Wrap the **entire content** of the file with a Helm conditional — one directive line at the very top, one at the very bottom:
 
 ```yaml
 {{- if .Values.db.enabled }}
