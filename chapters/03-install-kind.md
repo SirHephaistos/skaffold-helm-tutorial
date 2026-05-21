@@ -250,12 +250,12 @@ helm repo add traefik https://traefik.github.io/charts && helm repo update
 ```
 
 ```shell
-helm install traefik traefik/traefik -n traefik --create-namespace --set "nodeSelector.ingress-ready=true" --set "tolerations[0].key=node-role.kubernetes.io/control-plane" --set "tolerations[0].operator=Exists" --set "tolerations[0].effect=NoSchedule" --set "ports.web.hostPort=80" --set "ports.websecure.hostPort=443" --set "service.type=ClusterIP"
+helm install traefik traefik/traefik -n traefik --create-namespace --set-string "nodeSelector.ingress-ready=true" --set "tolerations[0].key=node-role.kubernetes.io/control-plane" --set "tolerations[0].operator=Exists" --set "tolerations[0].effect=NoSchedule" --set "ports.web.hostPort=80" --set "ports.websecure.hostPort=443" --set "service.type=ClusterIP"
 ```
 
 What each `--set` does:
 
-* `nodeSelector.ingress-ready=true` → schedule Traefik on the node we labeled in step 3, the one whose `extraPortMappings` actually publishes ports to the host.
+* `--set-string "nodeSelector.ingress-ready=true"` → schedule Traefik on the node we labeled in step 3, the one whose `extraPortMappings` actually publishes ports to the host. **Why `--set-string` instead of `--set`:** helm's `--set` auto-converts unquoted `true`/`false` into Go booleans, but Kubernetes' `nodeSelector` schema requires the value to be a string. `--set-string` forces string interpretation.
 * `tolerations[0...]` → kind's single-node cluster has only a control-plane node, and control-plane nodes carry a `NoSchedule` taint that normally blocks workload pods. The toleration tells Traefik "I'm fine landing on a control-plane node."
 * `ports.web.hostPort=80` / `ports.websecure.hostPort=443` → bind directly to the kind node container's ports 80/443. Kind's `extraPortMappings` then surfaces those as host `localhost:8080` / `localhost:8443`.
 * `service.type=ClusterIP` → don't request a `LoadBalancer` (we have no cloud LB provider). External traffic enters via `hostPort` instead.
