@@ -290,26 +290,91 @@ If `endpoints/api` shows the api pod's IP, the Service is wired correctly.
 
 ## 6. Add the database to the chart
 
-The chapter-4 ConfigMap, StatefulSet, and Service for postgres also belong in the chart.
+The chapter-4 ConfigMap, StatefulSet, and Service for postgres also belong in the chart. We're going to put all three in one file, **and** wrap them in a Helm conditional so the database can be turned off via a value (useful in production where you'd connect to an external managed Postgres instead).
 
-### Create `myapp/templates/db.yaml` (new file)
+### Edit `myapp/values.yaml`
 
-Paste the three YAMLs from chapter 4 into it, separated by `---` between each (so it's one file with three documents):
-
-1. the `postgresql-initdb-config` ConfigMap
-2. the `postgresql-db` StatefulSet
-3. the `postgres-db` Service
-
-No templating needed yet — `postgres:16` doesn't change between releases.
-
-### Make the database optional
-
-Open `myapp/values.yaml`. Add a `db:` block alongside the existing `frontend:` and `backend:` blocks (order doesn't matter):
+Add a `db:` block at the end (alongside `frontend:` and `backend:`, order doesn't matter):
 
 ```yaml
 db:
   enabled: true
 ```
+
+### Create `myapp/templates/db.yaml` (new file)
+
+Paste this whole file in. It contains ConfigMap + StatefulSet + Service, all wrapped in `{{- if .Values.db.enabled }} ... {{- end }}`:
+
+```yaml
+{{- if .Values.db.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-initdb-config
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS counter (
+      counterId SERIAL PRIMARY KEY,
+      api TEXT NOT NULL,
+      counter INTEGER NOT NULL default 0
+    );
+
+    INSERT INTO counter (api) VALUES ('myapi');
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql-db
+spec:
+  selector:
+    matchLabels:
+      app: postgresql-db
+  replicas: 1
+  serviceName: postgres-db
+  template:
+    metadata:
+      labels:
+        app: postgresql-db
+    spec:
+      containers:
+        - name: postgresql-db
+          image: postgres:16
+          volumeMounts:
+            - name: postgresql-db-disk
+              mountPath: /data
+            - name: postgresql-initdb
+              mountPath: /docker-entrypoint-initdb.d
+          env:
+            - name: POSTGRES_PASSWORD
+              value: astrongdatabasepassword
+            - name: PGDATA
+              value: /data/pgdata
+      volumes:
+        - name: postgresql-initdb
+          configMap:
+            name: postgresql-initdb-config
+  volumeClaimTemplates:
+    - metadata:
+        name: postgresql-db-disk
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-db
+spec:
+  selector:
+    app: postgresql-db
+  ports:
+    - port: 5432
+{{- end }}
+```
+
+The `{{- if }}` / `{{- end }}` are Helm template directives, not YAML. They wrap the **entire file**. If `db.enabled` is `false`, Helm renders nothing for this file and none of the three resources get created.
 
 Now edit `myapp/templates/db.yaml`. Wrap the **entire content** of the file with a Helm conditional — one directive line at the very top, one at the very bottom:
 
